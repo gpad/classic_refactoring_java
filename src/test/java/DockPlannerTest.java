@@ -4,20 +4,22 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.ObjectInputFilter;
+import java.nio.file.Paths;
+import java.time.Duration;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 
 class DockPlannerTest {
 
+    DockPlanner planner = new DockPlanner();
+
     @BeforeEach
     void setUp() throws IOException {
-        ObjectInputFilter.Config config;
-        FileUtils.deleteDirectory(new File("directory"));
+        Config config = new Config();
+        FileUtils.deleteDirectory(new File(config.reservation_folder()));
+        FileUtils.deleteDirectory(new File(config.shared_folder_for_email()));
     }
-
-    DockPlanner planner = new DockPlanner();
 
     @Test
     public void shouldReserveSlotsForLoadingSomePallets() throws IOException {
@@ -39,245 +41,214 @@ class DockPlannerTest {
         assertTrue(res != 0);
     }
 
+    @Test
+    public void shouldReturnSameAvailableSlotIfNoReserveSlotIsCalled() throws IOException {
+        var slots = planner.calcSlots(3);
+        var loadFrom = planner.findNextAvailableSlot(slots, true);
+        var loadFrom1 = planner.findNextAvailableSlot(slots, true);
+        var unloadingFrom = planner.findNextAvailableSlot(slots, false);
+        var unloadingFrom1 = planner.findNextAvailableSlot(slots, false);
+
+        assertEquals(loadFrom, loadFrom1);
+        assertEquals(unloadingFrom, unloadingFrom1);
+    }
+
+    @Test
+    public void shouldReturnDifferentSlotAfterAReservation() throws IOException {
+        var slots = planner.calcSlots(3);
+        var loadFrom = planner.findNextAvailableSlot(slots, true);
+
+        planner.reserveSlot(loadFrom, slots, true);
+
+        var loadFrom1 = planner.findNextAvailableSlot(slots, true);
+
+        assertNotEquals(loadFrom, loadFrom1);
+    }
+
+    @Test
+    public void shouldStartFromSameTimeForUnlaodingAndLoading() throws IOException {
+        var slots = planner.calcSlots(3);
+        var loadFrom = planner.findNextAvailableSlot(slots, true);
+        var unloadingFrom = planner.findNextAvailableSlot(slots, false);
+
+        assertEquals(loadFrom, unloadingFrom);
+    }
+
+    @Test
+    public void shouldKeepLoadingAndUnloadingOperationSeparated() throws IOException {
+        var slots = planner.calcSlots(3);
+        var fromLoading = planner.findNextAvailableSlot(slots, true);
+        var fromUnoading = planner.findNextAvailableSlot(slots, false);
+
+        var res = planner.reserveSlot(fromLoading, slots, false);
+
+        var fromLoading1 = planner.findNextAvailableSlot(slots, true);
+        var fromUnoading1 = planner.findNextAvailableSlot(slots, false);
+
+        assertEquals(fromLoading, fromLoading1);
+        assertNotEquals(fromUnoading, fromUnoading1);
+    }
+
+    @Test
+    public void shouldReturnIncreasingAvailableSlots() throws IOException {
+        var slots = planner.calcSlots(3);
+        var f1 = planner.findNextAvailableSlot(slots, true);
+        assertTrue(planner.reserveSlot(f1, slots, true) > 0);
+
+        var f2 = planner.findNextAvailableSlot(slots, true);
+        assertTrue(planner.reserveSlot(f2, slots, true) > 0);
+
+        var f3 = planner.findNextAvailableSlot(slots, true);
+        assertTrue(planner.reserveSlot(f3, slots, true) > 0);
+
+        var f4 = planner.findNextAvailableSlot(slots, true);
+        assertTrue(planner.reserveSlot(f4, slots, true) > 0);
+        assertTrue(f1.isBefore(f2));
+        var xxx = Duration.between(f1, f2);
+
+        assertEquals(xxx, Duration.ofMinutes(slots * 30));
+
+        assertTrue(f2.isBefore(f3));
+        assertTrue(f3.isBefore(f4));
+        assertEquals(Duration.between(f3, f4), Duration.ofMinutes(slots * 30));
+    }
+
+    @Test
+    public void shouldReserveSlotsAtTimePassed() throws IOException {
+        var slots = planner.calcSlots(3);
+        planner.findNextAvailableSlot(slots, true);
+        var from = planner.findNextAvailableSlot(slots, true);
+        var id = planner.reserveSlot(from, 3, true);
+
+        Config config = new Config();
+        var path = Paths.get(config.reservation_folder(), String.valueOf(id));
+        var reservation = planner.read_reservation(path);
+
+        assertEquals(reservation.start_at, from);
+
+        assertEquals(reservation.end_at, from.plus(Duration.ofMinutes(slots * 30)));
+    }
+
+    @Test
+    public void shouldUpdateDriverData() throws IOException {
+        var slots = planner.calcSlots(3);
+        planner.findNextAvailableSlot(slots, true);
+        var from = planner.findNextAvailableSlot(slots, true);
+        var id = planner.reserveSlot(from, 3, true);
+
+        var document = FileUtils.readFileToByteArray(new File("src/test/resources/jon_snow.pdf"));
+        assertTrue(document.length > 0);
+
+        planner.append_driver_info(id, "Jon", "Snow", document);
+
+        Config config = new Config();
+        var path = Paths.get(config.reservation_folder(), String.valueOf(id));
+        var reservation = planner.read_reservation(path);
+
+        assertEquals(reservation.first_name, "Jon");
+        assertEquals(reservation.last_name, "Snow");
+        assertArrayEquals(reservation.document, document);
+    }
+
+    @Test
+    public void shouldUpdateVeichlePlate() throws IOException {
+        var slots = planner.calcSlots(3);
+        planner.findNextAvailableSlot(slots, true);
+        var from = planner.findNextAvailableSlot(slots, true);
+        var id = planner.reserveSlot(from, 3, true);
+
+        var document = FileUtils.readFileToByteArray(new File("src/test/resources/jon_snow.pdf"));
+        assertTrue(document.length > 0);
+
+        planner.append_driver_info(id, "Jon", "Snow", document);
+        planner.append_plate_info(id, "1234");
+        planner.append_plate_info(id, "XX666XX");
+
+        Config config = new Config();
+        var path = Paths.get(config.reservation_folder(), String.valueOf(id));
+        var reservation = planner.read_reservation(path);
+
+        assertEquals(reservation.first_name, "Jon");
+        assertEquals(reservation.last_name, "Snow");
+        assertArrayEquals(reservation.document, document);
+        assertEquals(reservation.veichle_plate, "XX666XX");
+    }
+
+    @Test
+    public void shouldSendEmailForReservationWithoutDriverInfo() throws IOException {
+        var slots = planner.calcSlots(3);
+        planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        var document = FileUtils.readFileToByteArray(new File("src/test/resources/jon_snow.pdf"));
+        assertTrue(document.length > 0);
+
+        planner.append_driver_info(id, "Jon", "Snow", document);
+        planner.append_plate_info(id, "XX666XX");
+
+        planner.check_missing_info();
+
+        Config config = new Config();
+        var folder = new File(config.shared_folder_for_email());
+        for (var x : folder.listFiles(File::isFile)) {
+            var str = FileUtils.readFileToString(x, "UTF-8");
+            assertEquals(str, "The reservation with id: 1 hasn't the required documents: \n- document is missing\n- The name of driver is missing\n- The plate is missing\n");
+        }
+    }
+
+    @Test
+    public void shouldSendEmailForReservationWithoutVeichelePlate() throws IOException {
+        var slots = planner.calcSlots(3);
+        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        var document = FileUtils.readFileToByteArray(new File("src/test/resources/cersei_lannister.pdf"));
+        assertTrue(document.length > 0);
+        planner.append_driver_info(id, "Cersei", "Lannister", document);
+
+        id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        document = FileUtils.readFileToByteArray(new File("src/test/resources/jon_snow.pdf"));
+        assertTrue(document.length > 0);
+        planner.append_driver_info(id, "Jon", "Snow", document);
+        planner.append_plate_info(id, "XX666XX");
+
+        planner.check_missing_info();
+
+        Config config = new Config();
+        var folder = new File(config.shared_folder_for_email());
+        for (var x : folder.listFiles(File::isFile)) {
+            var str = FileUtils.readFileToString(x, "UTF-8");
+            assertEquals(str, "The reservation with id: 1 hasn't the required documents: \n- The plate is missing\n");
+        }
+    }
+
+    @Test
+    public void shouldSendEmailForReservationWithInvalidVeichelePlate() throws IOException {
+        var slots = planner.calcSlots(3);
+        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        var document = FileUtils.readFileToByteArray(new File("src/test/resources/cersei_lannister.pdf"));
+        assertTrue(document.length > 0);
+        planner.append_driver_info(id, "Cersei", "Lannister", document);
+        planner.append_plate_info(id, "cersei rules");
+
+        id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
+        document = FileUtils.readFileToByteArray(new File("src/test/resources/jon_snow.pdf"));
+        assertTrue(document.length > 0);
+        planner.append_driver_info(id, "Jon", "Snow", document);
+        planner.append_plate_info(id, "XX666XX");
+
+        planner.check_missing_info();
+
+        Config config = new Config();
+        var folder = new File(config.shared_folder_for_email());
+        for (var x : folder.listFiles(File::isFile)) {
+            var str = FileUtils.readFileToString(x, "UTF-8");
+            assertEquals(str, "The reservation with id: 1 hasn't the required documents: \n- The plate 'cersei rules' is not valid\n");
+        }
+    }
+
+//    planner.check_missing_info
+//     TODO -- planner.archive_reservation
 //    @Test
-//    public void shouldreturnSameAvailableSlotIfNoReserveSlotIsCalled() {
-//        DockPlanner planner;
-//        var slots = planner.calcSlots(3);
-//        var loadFrom = planner.findNextAvailableSlot(slots, true);
-//        var loadFrom1 = planner.findNextAvailableSlot(slots, true);
-//        var unloadingFrom = planner.findNextAvailableSlot(slots, false);
-//        var unloadingFrom1 = planner.findNextAvailableSlot(slots, false);
-//
-//        assertEquals(loadFrom, loadFrom1);
-//        assertEquals(unloadingFrom, unloadingFrom1);
-//    }
-//
-//    @Test
-//    public void shouldReturnDifferentSlotAfterAReservation() {
-//        DockPlanner planner;
-//        var slots = planner.calcSlots(3);
-//        var loadFrom = planner.findNextAvailableSlot(slots, true);
-//
-//        planner.reserveSlot(loadFrom, slots, true);
-//
-//        var loadFrom1 = planner.findNextAvailableSlot(slots, true);
-//
-//        assertNotEquals(loadFrom, loadFrom1);
-//    }
-//
-//    @Test
-//    public void shouldStartFromSameTimeForUnlaodingAndLoading() {
-//        DockPlanner planner;
-//        var slots = planner.calcSlots(3);
-//        var loadFrom = planner.findNextAvailableSlot(slots, true);
-//        var unloadingFrom = planner.findNextAvailableSlot(slots, false);
-//
-//        assertEquals(loadFrom, unloadingFrom);
-//    }
-//
-//    @Test
-//    public void shouldKeepLoadingAndUnloadingOperationSeparated() {
-//        DockPlanner planner;
-//        var slots = planner.calcSlots(3);
-//        var fromLoading = planner.findNextAvailableSlot(slots, true);
-//        var fromUnoading = planner.findNextAvailableSlot(slots, false);
-//
-//        var res = planner.reserveSlot(fromLoading, slots, false);
-//
-//        var fromLoading1 = planner.findNextAvailableSlot(slots, true);
-//        var fromUnoading1 = planner.findNextAvailableSlot(slots, false);
-//
-//        assertThat(fromLoading, fromLoading1);
-//        EXPECT_NE(fromUnoading, fromUnoading1);
-//    }
-//
-//    @Test
-//    public void shouldReturnIncreasingAvailableSlots() {
-//        DockPlanner planner;
-//        var slots = planner.calcSlots(3);
-//        std::cout << "slots " << slots << std::endl;
-//        var f1 = planner.findNextAvailableSlot(slots, true);
-//        EXPECT_TRUE(planner.reserveSlot(f1, slots, true));
-//
-//        var f2 = planner.findNextAvailableSlot(slots, true);
-//        EXPECT_TRUE(planner.reserveSlot(f2, slots, true));
-//
-//        var f3 = planner.findNextAvailableSlot(slots, true);
-//        EXPECT_TRUE(planner.reserveSlot(f3, slots, true));
-//
-//        var f4 = planner.findNextAvailableSlot(slots, true);
-//        EXPECT_TRUE(planner.reserveSlot(f4, slots, true));
-//        EXPECT_TRUE(f1 < f2);
-//        var xxx = std::chrono::duration_cast < std::chrono::minutes > (f2 - f1);
-//
-//        assertThat(xxx.count(), std::chrono::minutes (slots * 30).count());
-//
-//        EXPECT_TRUE(f2 < f3);
-//        EXPECT_TRUE(f3 < f4);
-//        assertThat((f4 - f3), std::chrono::minutes (slots * 30));
-//    }
-//
-//    @Test
-//    public void shouldReserveSlotsAtTimePassed() {
-//        var slots = planner.calcSlots(3);
-//        planner.findNextAvailableSlot(slots, true);
-//        var from = planner.findNextAvailableSlot(slots, true);
-//        var id = planner.reserveSlot(from, 3, true);
-//
-//        Config config;
-//        boost::filesystem::path f = config.reservation_folder();
-//        f /= std::to_string (id);
-//        var reservation = planner.read_reservation(f);
-//
-//        assertThat(reservation.start_at, from);
-//
-//        // var elapsed = reservation.end_at - reservation.start_at;
-//        // std::cout << "elapsed: " << std::chrono::duration_cast<std::chrono::minutes>(elapsed).count() << std::endl;
-//        // var elapsed2 = reservation.end_at - from;
-//        // std::cout << "elapsed2: " << std::chrono::duration_cast<std::chrono::minutes>(elapsed2).count() << std::endl;
-//        // std::cout << (reservation.start_at == from) << std::endl;
-//        assertThat(reservation.end_at, from + std::chrono::minutes (slots * 30));
-//    }
-//
-//    @Test
-//    public void shouldUpdateDriverData() {
-//        var slots = planner.calcSlots(3);
-//        planner.findNextAvailableSlot(slots, true);
-//        var from = planner.findNextAvailableSlot(slots, true);
-//        var id = planner.reserveSlot(from, 3, true);
-//
-//        std::ifstream input("jon_snow.pdf", std::ios::binary);
-//        var document = std::vector < char>(std::istreambuf_iterator < char>(input), {});
-//        ASSERT_GT(document.size(), 0);
-//
-//        planner.append_driver_info(id, "Jon", "Snow", document);
-//
-//        Config config;
-//        boost::filesystem::path f = config.reservation_folder();
-//        f /= std::to_string (id);
-//        var reservation = planner.read_reservation(f);
-//
-//        assertThat(reservation.first_name, "Jon");
-//        assertThat(reservation.last_name, "Snow");
-//        assertThat(reservation.document, document);
-//    }
-//
-//    @Test
-//    public void shouldUpdateVeichlePlate() {
-//        var slots = planner.calcSlots(3);
-//        planner.findNextAvailableSlot(slots, true);
-//        var from = planner.findNextAvailableSlot(slots, true);
-//        var id = planner.reserveSlot(from, 3, true);
-//
-//        std::ifstream input("jon_snow.pdf", std::ios::binary);
-//        var document = std::vector < char>(std::istreambuf_iterator < char>(input), {});
-//        ASSERT_GT(document.size(), 0);
-//
-//        planner.append_driver_info(id, "Jon", "Snow", document);
-//        planner.append_plate_info(id, "1234");
-//        planner.append_plate_info(id, "XX666XX");
-//
-//        Config config;
-//        boost::filesystem::path f = config.reservation_folder();
-//        f /= std::to_string (id);
-//        var reservation = planner.read_reservation(f);
-//
-//        assertThat(reservation.first_name, "Jon");
-//        assertThat(reservation.last_name, "Snow");
-//        assertThat(reservation.document, document);
-//    }
-//
-//    @Test
-//    public void shouldSendEmailForReservationWithoutDriverInfo() {
-//        var slots = planner.calcSlots(3);
-//        planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-//        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-//        std::ifstream input("jon_snow.pdf", std::ios::binary);
-//        var document = std::vector < char>(std::istreambuf_iterator < char>(input), {});
-//        ASSERT_GT(document.size(), 0);
-//        planner.append_driver_info(id, "Jon", "Snow", document);
-//        planner.append_plate_info(id, "XX666XX");
-//
-//        planner.check_missing_info();
-//
-//        Config config;
-//        boost::filesystem::path folder = config.shared_folder_for_email();
-//        for (directory_entry & x :directory_iterator(folder))
-//        {
-//            std::ifstream input(x.path().string());
-//            std::string str((std::istreambuf_iterator < char>(input)),std::istreambuf_iterator < char>());
-//            assertThat(str, "The reservation with id: 1 hasn't the required documents: \n- document is missing\n- The name of driver is missing\n- The plate is missing\n\n");
-//        }
-//    }
-//
-//    @Test
-//    public void shouldSendEmailForReservationWithoutVeichelePlate() throws IOException {
-//
-//        var slots = planner.calcSlots(3);
-//        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-////        std::ifstream input("cersei_lannister.pdf", std::ios::binary);
-////        var document = std::vector<char>(std::istreambuf_iterator<char>(input), {});
-//        var document = FileUtils.readFileToByteArray(new File("cersei_lannister.pdf"));
-////        ASSERT_GT(document.size(), 0);
-//        assertThat(document.length > 0);
-//        planner.append_driver_info(id, "Cersei", "Lannister", document);
-//
-//        id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-//        std::ifstream input_js("jon_snow.pdf", std::ios::binary);
-//        document = std::vector < char>(std::istreambuf_iterator < char>(input_js), {});
-//        ASSERT_GT(document.size(), 0);
-//        planner.append_driver_info(id, "Jon", "Snow", document);
-//        planner.append_plate_info(id, "XX666XX");
-//
-//        planner.check_missing_info();
-//
-//        Config config;
-//        boost::filesystem::path folder = config.shared_folder_for_email();
-//        for (directory_entry & x :directory_iterator(folder))
-//        {
-//            std::ifstream input(x.path().string());
-//            std::string str((std::istreambuf_iterator < char>(input)),std::istreambuf_iterator < char>());
-//            assertThat(str, "The reservation with id: 1 hasn't the required documents: \n- The plate is missing\n\n");
-//        }
-//    }
-//
-//    @Test
-//    public void shouldSendEmailForReservationWithInvalidVeichelePlate() {
-//        var slots = planner.calcSlots(3);
-//        var id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-//        std::ifstream input("cersei_lannister.pdf", std::ios::binary);
-//        var document = std::vector < char>(std::istreambuf_iterator < char>(input), {});
-//        ASSERT_GT(document.size(), 0);
-//        planner.append_driver_info(id, "Cersei", "Lannister", document);
-//        planner.append_plate_info(id, "cersei rules");
-//
-//        id = planner.reserveSlot(planner.findNextAvailableSlot(slots, true), 3, true);
-//        std::ifstream input_js("jon_snow.pdf", std::ios::binary);
-//        document = std::vector < char>(std::istreambuf_iterator < char>(input_js), {});
-//        ASSERT_GT(document.size(), 0);
-//        planner.append_driver_info(id, "Jon", "Snow", document);
-//        planner.append_plate_info(id, "XX666XX");
-//
-//        planner.check_missing_info();
-//
-//        Config config;
-//        boost::filesystem::path folder = config.shared_folder_for_email();
-//        for (directory_entry & x :directory_iterator(folder))
-//        {
-//            std::ifstream input(x.path().string());
-//            std::string str((std::istreambuf_iterator < char>(input)),std::istreambuf_iterator < char>());
-//            assertThat(str, "The reservation with id: 1 hasn't the required documents: \n- The plate 'cersei rules' is not valid\n\n");
-//        }
-//    }
-//
-//    //planner.check_missing_info
-//// TODO -- planner.archive_reservation
-////@Test
-//    public void shouldMoveOldReservationFromReservationFolderToArchiveFolder)
-//
+//    public void shouldMoveOldReservationFromReservationFolderToArchiveFolder()
 //    {
 //        FAIL("TODO");
 //    }
-
-
 }
