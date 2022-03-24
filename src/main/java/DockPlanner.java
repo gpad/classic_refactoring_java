@@ -65,7 +65,7 @@ class DockPlanner {
 
         Config config = new Config();
         var from = get_today_openingtime();
-        var to = from.plus(Duration.ofMinutes(30));// + std::chrono::minutes(slots * 30);
+        var to = from.plus(Duration.ofMinutes(30*slots));// + std::chrono::minutes(slots * 30);
         while (true) {
             if (loading) {
                 boolean intersect = false;
